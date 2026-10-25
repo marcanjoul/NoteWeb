@@ -1,205 +1,139 @@
-# 🧠 NoteWeb
+# NoteWeb
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)](https://www.python.org/)
-[![Ollama](https://img.shields.io/badge/LLM-LLaMA_3_via_Ollama-brightgreen?logo=openai)](https://ollama.com/)
-[![Semantic Search](https://img.shields.io/badge/Semantic_Search-Enabled-blueviolet)](#)
-[![File Support](https://img.shields.io/badge/File_Support-PDF-yellow)](#file-support)
-[![Status](https://img.shields.io/badge/Status-Active_Development-orange)](#roadmap)
-[![First AI Project](https://img.shields.io/badge/My_First_AI_Project-%F0%9F%A4%96-lightgrey)](#)
+**Ask questions about your own notes and get answers grounded in them, fully offline.**
 
->  A local-first AI-powered tool to **search, summarize, and understand your notes** — built for students, by a student.  
-> Uses chunking, vector embeddings, and LLaMA 3 via Ollama for real semantic understanding.
+NoteWeb is a local retrieval-augmented generation (RAG) pipeline written from scratch in Python. It ingests PDFs, Word docs, slide decks, and spreadsheets, indexes them as vector embeddings, and answers questions with LLaMA 3 running locally through Ollama. Nothing leaves your machine.
 
----
+I built it without LangChain or LlamaIndex on purpose: every stage (loading, chunking, embedding, retrieval, prompting) is a small module you can read in a few minutes, which makes it easy to see how RAG actually works and to swap out any piece.
 
-##  Features
-
-- Index PDFs, Word, Excel, and PowerPoint files into semantic chunks
-- Embed and store those chunks using vector search
-- Ask questions using LLaMA 3 via Ollama (offline + local)
-- Get answers with real context grounding (like the ChatGPT Retrieval Plugin)
-+ - Follow-up question support with persistent memory
-+ - Ingest multiple files at once from a folder
-+ - Test-ready with `test files/` folder
-
+![Python](https://img.shields.io/badge/Python-3.11-blue?logo=python)
+![LLaMA 3](https://img.shields.io/badge/LLM-LLaMA_3_via_Ollama-brightgreen)
+![Local](https://img.shields.io/badge/Runs-100%25_local-blueviolet)
 
 ---
 
-## Folder Structure
+## How it works
+
+```mermaid
+flowchart LR
+    subgraph Indexing ["Indexing (generate_index.py)"]
+        A[PDF / DOCX / PPTX / XLSX] --> B[files_loader.py<br/>extract text]
+        B --> C[chunker.py<br/>500-char chunks, 50-char overlap]
+        C --> D[embedder.py<br/>all-MiniLM-L6-v2]
+        D --> E[(embeddings_index.json)]
+    end
+
+    subgraph Query ["Querying (search.py)"]
+        Q[Your question] --> QE[Embed question]
+        QE --> S[Cosine similarity<br/>against every chunk]
+        E --> S
+        S --> K[Top 3 chunks]
+        K --> P[llm_answerer.py<br/>context + chat history + question]
+        P --> L[LLaMA 3 via Ollama]
+        L --> R[Answer]
+        R -. saved to history .-> P
+    end
+```
+
+Indexing happens once. Each file is converted to plain text, split into overlapping chunks, and each chunk is turned into a 384-dimensional vector. At query time, your question is embedded with the same model, compared against every stored chunk, and the three closest chunks are handed to LLaMA 3 as context alongside the conversation so far.
+
+---
+
+## Design decisions
+
+**No RAG framework.** Frameworks hide the parts worth understanding. Retrieval here is a cosine similarity function in NumPy and a sort, so you can see exactly why a chunk was or wasn't returned.
+
+**Local embeddings and a local LLM.** `all-MiniLM-L6-v2` is small and fast enough to embed a semester of notes on a laptop CPU, and Ollama serves LLaMA 3 without an API key. The trade-off is answer quality versus a hosted frontier model, in exchange for privacy and zero cost.
+
+**Fixed-size chunks with overlap.** Chunks are 500 characters with 50 characters of overlap so a sentence split across a boundary still appears whole in at least one chunk. It's simple and predictable; structure-aware chunking (by heading or paragraph) is on the roadmap.
+
+**Flat JSON index with brute-force search.** For a personal notes folder (hundreds to a few thousand chunks), comparing against every chunk is fast and needs no database. It doesn't scale to large corpora; see Limitations.
+
+**Conversation memory.** Previous Q&A pairs are included in the prompt, so follow-ups like "explain that more simply" work.
+
+---
+
+## Project structure
 
 ```
 noteweb/
-├── main.py                 # CLI entrypoint
-├── search.py              # Embedding search logic
-├── llm_answerer.py        # Sends chunks to LLaMA via Ollama
-├── embedder.py            # Generates embeddings
-├── chunker.py             # Breaks files into semantic chunks
-├── files_loader.py        # PDF loader (more formats soon)
-├── generate_index.py      # Index generator (embeds + saves)
-├── embeddings_index.json  # Your saved vector index
-├── test files/            # Sample PDFs to test with
-├── requirements.txt
-└── venv/                  # Your virtual environment
+├── files_loader.py      # Text extraction for PDF, DOCX, PPTX, XLSX
+├── chunker.py           # Fixed-size overlapping chunking
+├── embedder.py          # Sentence embeddings (all-MiniLM-L6-v2)
+├── generate_index.py    # Load → chunk → embed → save index
+├── search.py            # Retrieval + interactive Q&A loop
+├── llm_answerer.py      # Prompt construction + LLaMA 3 via Ollama
+├── test_loader.py       # Tests for each pipeline stage
+├── test_chunker.py
+├── test_embed.py
+├── test files/          # Put your documents here
+└── requirements.txt
 ```
 
 ---
 
-## Requirements
+## Getting started
 
-- Python **3.11+**
-- [Ollama](https://ollama.com) installed and running
-  ```bash
-  brew install ollama
-  ollama run llama3
-  ```
-- Install dependencies:
-  ```bash
-  pip install -r requirements.txt
-  ```
-
----
-
-## How to Use
-
-### 1. Clone the Repository
+**Requirements:** Python 3.11+ and [Ollama](https://ollama.com).
 
 ```bash
-git clone https://github.com/marcanjoul/noteweb.git
-cd noteweb
-```
-Or, if you downloaded the ZIP, unzip it and navigate into the folder via:
-```bash
-cd ~/Desktop/noteweb-main  # or wherever you saved it
-```
-### 2. Set Up a Virtual Environment
-We recommend using a virtual environment to keep dependencies clean:
-```bash
+# 1. Install Ollama and pull the model
+brew install ollama
+ollama pull llama3:instruct
+
+# 2. Clone and set up
+git clone https://github.com/marcanjoul/NoteWeb.git
+cd NoteWeb
 python3 -m venv venv
-source venv/bin/activate  # (for mac) # On Windows, use venv\Scripts\activate
-```
-### 3. Install Dependencies
-Run the following to install all required packages:
-```bash
+source venv/bin/activate        # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-```
-If needed, manually install these extras:
-```bash
-pip install python-docx python-pptx openpyxl sentence-transformers
-```
-### 4. Add Your Files
-Create or drop any files you want to search into the test files/ directory. Supported formats:
-.pdf
-.docx
-.pptx
-.xlsx
-### 5. Run this to generate semantic embeddings from files in your folder
-```bash
-python generate_index.py
-```
-This will:
-- Load all .pdf, .docx, .xslx, and .pptx files from your test files/ folder
-- Chunk the content into semantically meaningful parts
-- Embed each chunk using sentence-transformers
-- Save everything to embeddings_index.json
 
-### 6. Search Your Files with the AI
-```bash
+# 3. Add your documents to "test files/", then build the index
+python generate_index.py
+
+# 4. Start asking questions
 python search.py
 ```
-This will:
-- Search your indexed chunks for relevant context
-- Pass top matches to **LLaMA 3**
-- Return an answer based on your notes
-- You can also ask follow-up questions, as NoteWeb remembers the context!
-  
-  💡 Example Usage
-  > What is the difference between supervised and unsupervised learning?
 
-  ❗Requirements
-  Make sure you have:
-  - Python 3.9+
-  - pip
-  - Optional: Ollama installed and running (for local LLaMA 3 support)
-  
-  💡 Optional: Skip venv (Not Recommended)
-  You can also run NoteWeb without using a virtual environment:
+Example session:
 
-  ```bash
-  pip install -r requirements.txt
-  pip install python-docx python-pptx openpyxl sentence-transformers
-  ```
-
-### 7. Ask a question
-
-```bash
-python main.py --search "What is instruction-level parallelism?"
 ```
----
+🧠 Ask a question (or type 'exit' to quit): What is instruction-level parallelism?
 
-## Why This Matters
+🤖 LLaMA 3 says:
+Instruction-level parallelism is when a processor executes multiple instructions
+from a single program at the same time...
 
-NoteWeb simulates *real retrieval-augmented generation (RAG)* — the same strategy used in:
-- ChatGPT w/ File Uploads
-- Perplexity AI
-- Open-source RAG pipelines (like LangChain, LlamaIndex)
+🧠 Ask a question (or type 'exit' to quit): how is that different from pipelining?
+```
 
-But here, it’s all:
-- **Local**
-- **Educational**
-- **Hackable**
-
-Perfect for learning how vector search + LLMs work together.
+Re-run `generate_index.py` whenever you add or change files.
 
 ---
 
-## File Support
+## Limitations
 
-- ✅ PDF  
-+ - ✅ DOCX (.docx)  
-+ - ✅ PowerPoint (.pptx)
-+ - ✅ Excel (.xlsx)    
-+ - 🔜 TXT, Markdown, Web scraping
-
-You can drop files into the `test files/` folder!
+- **No source citations yet.** Chunks don't record which file they came from, so answers can't point back to a page.
+- **Brute-force search.** Every query compares against every chunk and reloads the index from disk. Fine for a notes folder; a vector index such as FAISS would be needed for large collections.
+- **Character-based chunking** can split mid-sentence or mix unrelated sections.
+- **History grows unbounded** within a session, so very long conversations will eventually exceed the model's context window.
+- **Text only.** Images, diagrams, and scanned (non-OCR) PDFs aren't indexed.
 
 ---
 
 ## Roadmap
 
-- [x] Multi-file indexing (entire folders at once)
-- [x] DOCX, PPTX, and XLSX support
-- [x] Follow-up question support
-- [x] Optional toggle in code for chunk visibility
-- [ ] Index caching to skip re-embedding unchanged files
-- [ ] Command-line UI / TUI
+- [ ] Store source file and page with each chunk and cite them in answers
+- [ ] Retrieval evaluation set (question → expected chunk) to measure top-k accuracy
+- [ ] Structure-aware chunking by heading and paragraph
+- [ ] Skip re-embedding unchanged files
 - [ ] Web UI
-
-
----
-
-## Project Status
-
-NoteWeb is my **first AI-integrated project** — made while learning:
-- How LLMs like LLaMA work
-- What “semantic search” really means
-- How chunking, embeddings, and vector stores come together
-
-This is the foundation for bigger projects — search tools, academic companions, even personalized AI.
+- [ ] TXT and Markdown support
 
 ---
 
-## Credits
+## Built with
 
-- Built with 💻 and ☕ by [@marcanjoul](https://github.com/marcanjoul)
-- PDF parsing via [`PyMuPDF`](https://pymupdf.readthedocs.io/)
-- DOCX parsing via [`python-docx`](https://python-docx.readthedocs.io/)
-- PowerPoint parsing via [`python-pptx`](https://python-pptx.readthedocs.io/)
-- Excel parsing via [`openpyxl`](https://openpyxl.readthedocs.io/)
-- Embeddings via [`sentence-transformers`](https://www.sbert.net/)
-- LLM answers via [Ollama](https://ollama.com) and Meta’s [LLaMA 3](https://ai.meta.com/llama/)
+[PyMuPDF](https://pymupdf.readthedocs.io/) · [python-docx](https://python-docx.readthedocs.io/) · [python-pptx](https://python-pptx.readthedocs.io/) · [openpyxl](https://openpyxl.readthedocs.io/) · [sentence-transformers](https://www.sbert.net/) · [Ollama](https://ollama.com) · [LLaMA 3](https://ai.meta.com/llama/)
 
-
----
-
-### Want to improve or collaborate?
-> Open an issue, drop a PR, or fork it and make it your own.I'd appreciate any feedback!
+Built by [Marc Anjoul](https://github.com/marcanjoul). Feedback, issues, and PRs welcome.
